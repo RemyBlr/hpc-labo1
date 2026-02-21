@@ -277,11 +277,84 @@ ECG_Status ecg_analyze(ECG_Context *ctx,
     const int refinement_window = refractory_samples / 2;
 
     // Boucle de détection
-    // Pic local (mwi[i] > mwi[i-1] et mwi[i] >= mwi[i+1])
+    // Pic local
     // HPC : O(n), accès séquentiel, on ne cible que le sommet
-    for (size_t i = 1; i < n_samples /*&& peaks->R_count < MAX_BEATS*/; i++)
+    for (size_t i = 1; i < n_samples && peaks->R_count < MAX_BEATS; i++)
     {
+        // Pic local si (mwi[i] > mwi[i-1] et mwi[i] >= mwi[i+1])
+        // Cette façon de faire permet de retourner que le 1er point d'un "plateau"
+        int is_local_max = (mwi[i] > mwi[i - 1]) && (mwi[i] >= mwi[i + 1]);
+        if (!is_local_max) continue;
 
+        // Période refractaore
+        if (i - last_r_index < refractory_samples) {
+            // Trop proche du dernier pic R détecté, on ignore pour éviter les faux positifs
+            // O(1), pas de buffer
+            noise_peak = (1 - NOISE_PEAK_DECAY_FACTOR) * noise_peak + NOISE_PEAK_DECAY_FACTOR * mwi[i];
+            threshold = noise_peak + 0.25 * (signal_peak - noise_peak);
+            continue;
+        }
+
+        // Test du seuil
+        if (mwi[i] < threshold) {
+            // Pas assez grand pour être un pic R, on considère comme du bruit
+            noise_peak = (1 - NOISE_PEAK_DECAY_FACTOR) * noise_peak + NOISE_PEAK_DECAY_FACTOR * mwi[i];
+            threshold = noise_peak + 0.25 * (signal_peak - noise_peak);
+            continue;
+        }
+
+        // Pic R détecté
+        // Pic dans mwi[] est décalé temporellement à cause du Moving Window Integration,
+        // On affine en cherchant le vrai max local
+        int r_index = find_max(signal, n_samples, (int)i, refinement_window);
+
+        // Màj speak_noise avec le nouveau pic R détecté
+        signal_peak = (1 - SIGNAL_PEAK_DECAY_FACTOR) * signal_peak + SIGNAL_PEAK_DECAY_FACTOR * mwi[i];
+        threshold = noise_peak + 0.25 * (signal_peak - noise_peak);
+
+        // Save du pic local
+        peaks->R[peaks->R_count++] = r_index;
+        peaks->R_count++;
+
+        // Indice dans mwi[] pour la période réfractaire
+        last_r_index = (int)i;
+    }
+
+    printf("[ECG] Pics R détectés: %d\n", peaks->R_count);
+
+    // 7. Calcul des intervalles RR
+    // Objectif : calculer la durée entre chaque pic R détecté, en secondes
+    // Méthode : RR[i] = (R[i+1] - R[i]) / fs
+    // HPC : O(nbr pics), accès séquentiel, une seule passe
+    if (intervals) {
+        intervals->count = 0;
+
+        // Pré calcul
+        const double interval_fs = 1.0 / fs;
+
+        for (int i = 0; i + 1 < peaks->R_count && intervals->count < MAX_BEATS; i++) {
+            int delta = peaks->R[i+1] - peaks->R[i];
+
+            // Filtre des val aberrantes : on ignore les intervalles trop courts (< 200 ms) ou trop longs (> 2s)
+            double rr = delta * interval_fs;
+            if (rr >= 0.2 && rr <= 2.0) {
+                intervals->RR[intervals->count] = rr;
+                intervals->count++;
+            }
+        }
+
+        printf("[ECG] Intervalles RR valides: %d\n", intervals->count);
+
+        // Fréquence cardiaque moyenne en BPM
+        if (intervals->count > 0) {
+            double rr_sum = 0.0;
+            for (int i = 0; i < intervals->count; i++)
+                rr_sum += intervals->RR[i];
+
+            double rr_mean = rr_sum / intervals->count;
+            double bpm = 60.0 / rr_mean;
+            printf("[ECG] Fréquence cardiaque moyenne: %.1f BPM\n", bpm);
+        }
     }
 
 
