@@ -12,6 +12,9 @@
  * 5. Période réfractaire pour éviter les faux positifs.
  */
 #include "ecg_processing.h"
+
+#include <stdio.h>
+
 #include "ecg_utils.h"
 
 #include <stdlib.h>
@@ -172,12 +175,116 @@ static int find_max(const double *signal, size_t n_samples, int center, int half
  * Fonction d'analyse principale
  * =============================================================================== */
 
+/**
+ * @brief Analyse un signal ECG et extrait les pics R et les intervalles RR.
+ *
+ * Pipeline d'analyse inspirée de Pan-Tompkins et optimisée pour la performance et la robustesse :
+ *
+ * 1. Filtre passe-haut pour atténuer les basses fréquences.
+ * 2. Dérivation pour accentuer les transitions rapides (QRS).
+ * 3. Mise au carré pour réctifier le signal et accentuer les pics.
+ * 4. Intégration sur une fenêtre glissante pour lisser l'énergie du signal.
+ * 5. Détectopm des pics R avec un seuil adaptif + période réfractaire.
+ * 6. Affinage de la position des pics R sur le signal original.
+ * 7. Calcul des intervalles RR à partir des indices des pics R détectés.
+ *
+ * @param ctx Contexte d'analyse (non NULL).
+ * @param signal Pointeur vers les échantillons ECG (non NULL).
+ * @param n_samples Nombre d'échantillons dans signal.
+ * @param lead_idx Index de la dérivation à analyser (0..LEADS-1).
+ * @param peaks Résultats de détection des pics (non NULL).
+ * @param intervals Intervalles calculés (peut être NULL si non demandé).
+ * @return ECG_OK en cas de succès, sinon un code d'erreur négatif.
+ */
 ECG_Status ecg_analyze(ECG_Context *ctx,
                        const double *signal,
                        size_t n_samples,
                        int lead_idx,
                        ECG_Peaks *peaks,
                        ECG_Intervals *intervals) {
-    // TODO treatment
+
+    // Vérifications de base
+    if (!ctx || !signal || !peaks) return ECG_ERR_NULL;
+    if (n_samples == 0 || n_samples > MAX_SAMPLES) return ECG_ERR_PARAM;
+    if (lead_idx < 0 || lead_idx >= ctx->params.leads) return ECG_ERR_PARAM;
+
+    // fréquence en Hz
+    const int fs = ctx->params.sampling_rate_hz;
+    // Passe-haut
+    double *hp = ctx->high_pass_buffer;
+    // Dérivation
+    double *deriv = ctx->low_pass_buffer;
+    // Carré
+    double *squared = ctx->squared_buffer;
+    // Intégration
+    double *mwi = ctx->mwi_buffer;
+
+    //Calcul des fenêtres
+    const int low_pass_window = (LOW_PASS_WINDOW_MS * fs) / 1000;
+    const int mwi_window = (MWI_WINDOW_MS * fs) / 1000;
+    const int refractory_samples = REFRACTORY_SAMPLES(fs);
+
+    printf("[ECG] fs=%d Hz, low_pass_window=%d samples, mwi_window=%d samples, refractory_samples=%d samples\n",
+           fs, low_pass_window, mwi_window, refractory_samples);
+
+    // 1. Filtre passe-haut
+    // Objectif : supprimer dérive lente de la ligne basse (< 1Hz)
+    // Méthode : soustraction moyenne glissante (passe-haute =  x - MA(x))
+    // HPC : O(n), zéro alloc
+    ecg_highpass_ma(signal, hp, n_samples, low_pass_window);
+
+    // 2. Dérivation discrète
+    // Objectif : accentuer les transitions rapides (QRS a des pentes très raides par rapport aux ondes P et T)
+    // Méthode : y[i] = x[i] - x[i-1], différence premier ordre pour simplicité et rapidité.
+    // HPC : O(n), accès séquentiel, zéro alloc
+    ecg_derivative_1(hp, deriv, n_samples);
+
+    // 3. Mise au carré
+    // Objectif : réctification, tout devient positif, accentuation non-linéaire des pics.
+    // Méthode : y[i] = x[i]^2
+    // HPC : O(n), multiplication simple par élément
+    ecg_square(deriv, squared, n_samples);
+
+    // 4. Intégration sur une fenêtre glissante (Moving Window Integration)
+    // Objectif : lisser l'énergie du signal, faire ressortir les régions où le QRS est présent.
+    // Méthode : moyenne glissante sur une fenêtre de taille mwi_window
+    // HPC : O(n), somme glissante
+    ecg_mwi(squared, mwi, n_samples, mwi_window);
+
+    // 5. Détection des pics R avec seuil adaptatif + période réfractaire
+    // Objectif : chercher les pic  R locaux qui dépassent un seuil dynamique.
+    // Seuil adaptif:
+    // - signal_peak : moyenne des vrais pics détectés.
+    // - noise_peak : moyenne des candidats rejetés.
+    // - threshold = noise_peak + 0.25 * (signal_peak - noise_peak)
+    // HPC : O(1), pas de tableau d'historique à maintenir, pas de recalcul
+    double max_mwi = 0.0;
+    for (size_t i = 0; i < n_samples; i++)
+        if (mwi[i] > max_mwi) max_mwi = mwi[i];
+
+    double signal_peak = THRESHOLD_INITIAL_FACTOR * max_mwi;
+    double noise_peak = THRESHOLD_INITIAL_FACTOR * max_mwi * 0.5;
+    double threshold = noise_peak + 0.25 * (signal_peak - noise_peak);
+
+    // Compteur de pics R détectés
+    peaks->R_count = 0;
+
+    // Indice dernier pic R détecté, init à -inf pour ne pas bloquer les premiers pics
+    int last_r_index = -refractory_samples;
+
+    // 6. Demi-fenêtre pour affinage local
+    // On cherche le vrai max dans une fenetre de +-refinement_window autour du pic détecté sur le signal intégré
+    const int refinement_window = refractory_samples / 2;
+
+    // Boucle de détection
+    // Pic local (mwi[i] > mwi[i-1] et mwi[i] >= mwi[i+1])
+    // HPC : O(n), accès séquentiel, on ne cible que le sommet
+    for (size_t i = 1; i < n_samples /*&& peaks->R_count < MAX_BEATS*/; i++)
+    {
+
+    }
+
+
+
     return ECG_OK;
 }
