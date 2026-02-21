@@ -28,9 +28,9 @@
  * Le coeur ne peut pas battre à plus de 220 bpm, soit environ 270 ms entre deux battements.
  * J'utilise donc 270 ms comme garde-fou pour éviter de détecter des pics R trop proches les uns des autres.
  */
-#define REFRACTORY_PERIOD_MS 270
+#define REFRACTORY_PERIOD_MS 200
 // Nombre d'échantillons qui correspond à la priode réfractaire
-#define REFRACTORY_SAMPLES(heart_rate_hz) (heart_rate_hz * REFRACTORY_PERIOD_MS / 1000)
+#define REFRACTORY_SAMPLES(heart_rate_hz) ((REFRACTORY_PERIOD_MS * (heart_rate_hz)) / 1000)
 
 /*
  * Fenêtre du filtre passe-bas pour atténuer les hautes fréquences (bruit).
@@ -38,7 +38,7 @@
  * La largeur du complexe QRS est généralement inférieure entre 70 et 110ms.
  * J'utilise donc 130 ms pour avoir tout le QRS et éviter de trop lisser les données.
  */
-#define LOW_PASS_WINDOW_MS 130
+#define LOW_PASS_WINDOW_MS 150
 
 /*
  * Seuil initial pour la détection des pics R.
@@ -64,7 +64,7 @@
  * Correspond à la durée typique du complexe QRS, soit environ 130 ms.
  * Pan-Thomkins précconise ~150ms.
  */
-#define MWI_WINDOW_MS 130
+#define MWI_WINDOW_MS 150
 
 /* ===============================================================================
  * Structures internes
@@ -79,9 +79,9 @@ struct ECG_Context {
     ECG_Params params;
 
     // Signal filtré (passe-bas)
-    double *low_pass_buffer;
-    // Signal dérivé (filtre passe-haut)
     double *high_pass_buffer;
+    // Signal dérivé (filtre passe-haut)
+    double *derived_buffer;
     // Signal carré (non linéaire)
     double *squared_buffer;
     // Signal après fenêtre glissante (intégration)
@@ -107,15 +107,15 @@ ECG_Context *ecg_create(const ECG_Params *params) {
     ctx->params = *params;
 
     // Alloc des buffers
-    ctx->low_pass_buffer = malloc(sizeof(double) * MAX_SAMPLES);
     ctx->high_pass_buffer = malloc(sizeof(double) * MAX_SAMPLES);
+    ctx->derived_buffer = malloc(sizeof(double) * MAX_SAMPLES);
     ctx->squared_buffer = malloc(sizeof(double) * MAX_SAMPLES);
     ctx->mwi_buffer = malloc(sizeof(double) * MAX_SAMPLES);
 
     // Suffit d'un échec de malloc pour tout annuler
-    if (!ctx->low_pass_buffer || !ctx->high_pass_buffer || !ctx->squared_buffer || !ctx->mwi_buffer) {
-        free(ctx->low_pass_buffer);
+    if (!ctx->high_pass_buffer || !ctx->derived_buffer || !ctx->squared_buffer || !ctx->mwi_buffer) {
         free(ctx->high_pass_buffer);
+        free(ctx->derived_buffer);
         free(ctx->squared_buffer);
         free(ctx->mwi_buffer);
         free(ctx);
@@ -131,8 +131,8 @@ ECG_Context *ecg_create(const ECG_Params *params) {
  */
 void ecg_destroy(ECG_Context *ctx) {
     if (!ctx) return;
-    free(ctx->low_pass_buffer);
     free(ctx->high_pass_buffer);
+    free(ctx->derived_buffer);
     free(ctx->squared_buffer);
     free(ctx->mwi_buffer);
     free(ctx);
@@ -213,18 +213,18 @@ ECG_Status ecg_analyze(ECG_Context *ctx,
     // Passe-haut
     double *hp = ctx->high_pass_buffer;
     // Dérivation
-    double *deriv = ctx->low_pass_buffer;
+    double *deriv = ctx->derived_buffer;
     // Carré
     double *squared = ctx->squared_buffer;
     // Intégration
     double *mwi = ctx->mwi_buffer;
 
     //Calcul des fenêtres
-    const int low_pass_window = (LOW_PASS_WINDOW_MS * fs) / 1000;
-    const int mwi_window = (MWI_WINDOW_MS * fs) / 1000;
+    const size_t low_pass_window = (size_t)((LOW_PASS_WINDOW_MS * fs) / 1000);
+    const size_t mwi_window = (size_t)((MWI_WINDOW_MS * fs) / 1000);
     const int refractory_samples = REFRACTORY_SAMPLES(fs);
 
-    printf("[ECG] fs=%d Hz, low_pass_window=%d samples, mwi_window=%d samples, refractory_samples=%d samples\n",
+    printf("[ECG] fs=%d Hz, low_pass_window=%zu samples, mwi_window=%zu samples, refractory_samples=%d samples\n",
            fs, low_pass_window, mwi_window, refractory_samples);
 
     // 1. Filtre passe-haut
@@ -279,18 +279,18 @@ ECG_Status ecg_analyze(ECG_Context *ctx,
     // Boucle de détection
     // Pic local
     // HPC : O(n), accès séquentiel, on ne cible que le sommet
-    for (size_t i = 1; i < n_samples && peaks->R_count < MAX_BEATS; i++)
+    for (size_t i = 1; i + 1 < n_samples && peaks->R_count < MAX_BEATS; i++)
     {
         // Pic local si (mwi[i] > mwi[i-1] et mwi[i] >= mwi[i+1])
         // Cette façon de faire permet de retourner que le 1er point d'un "plateau"
-        int is_local_max = (mwi[i] > mwi[i - 1]) && (mwi[i] >= mwi[i + 1]);
+        int is_local_max = (mwi[i] > mwi[i-1]) && (mwi[i] >= mwi[i+1]);
         if (!is_local_max) continue;
 
         // Période refractaore
-        if (i - last_r_index < refractory_samples) {
+        if ((int)i - last_r_index < refractory_samples) {
             // Trop proche du dernier pic R détecté, on ignore pour éviter les faux positifs
             // O(1), pas de buffer
-            noise_peak = (1 - NOISE_PEAK_DECAY_FACTOR) * noise_peak + NOISE_PEAK_DECAY_FACTOR * mwi[i];
+            noise_peak = (1.0 - NOISE_PEAK_DECAY_FACTOR) * noise_peak + NOISE_PEAK_DECAY_FACTOR * mwi[i];
             threshold = noise_peak + 0.25 * (signal_peak - noise_peak);
             continue;
         }
@@ -298,7 +298,7 @@ ECG_Status ecg_analyze(ECG_Context *ctx,
         // Test du seuil
         if (mwi[i] < threshold) {
             // Pas assez grand pour être un pic R, on considère comme du bruit
-            noise_peak = (1 - NOISE_PEAK_DECAY_FACTOR) * noise_peak + NOISE_PEAK_DECAY_FACTOR * mwi[i];
+            noise_peak = (1.0 - NOISE_PEAK_DECAY_FACTOR) * noise_peak + NOISE_PEAK_DECAY_FACTOR * mwi[i];
             threshold = noise_peak + 0.25 * (signal_peak - noise_peak);
             continue;
         }
@@ -307,13 +307,16 @@ ECG_Status ecg_analyze(ECG_Context *ctx,
         // Pic dans mwi[] est décalé temporellement à cause du Moving Window Integration,
         // On affine en cherchant le vrai max local
         int r_index = find_max(signal, n_samples, (int)i, refinement_window);
+        // TODO probablement changer ça
+        //int r_index = (int)i - 13;
+        //if (r_index < 0) r_index = 0;
 
         // Màj speak_noise avec le nouveau pic R détecté
-        signal_peak = (1 - SIGNAL_PEAK_DECAY_FACTOR) * signal_peak + SIGNAL_PEAK_DECAY_FACTOR * mwi[i];
+        signal_peak = (1.0 - SIGNAL_PEAK_DECAY_FACTOR) * signal_peak + SIGNAL_PEAK_DECAY_FACTOR * mwi[i];
         threshold = noise_peak + 0.25 * (signal_peak - noise_peak);
 
         // Save du pic local
-        peaks->R[peaks->R_count++] = r_index;
+        peaks->R[peaks->R_count] = r_index;
         peaks->R_count++;
 
         // Indice dans mwi[] pour la période réfractaire
@@ -330,7 +333,7 @@ ECG_Status ecg_analyze(ECG_Context *ctx,
         intervals->count = 0;
 
         // Pré calcul
-        const double interval_fs = 1.0 / fs;
+        const double interval_fs = 1.0 / (double)fs;
 
         for (int i = 0; i + 1 < peaks->R_count && intervals->count < MAX_BEATS; i++) {
             int delta = peaks->R[i+1] - peaks->R[i];
@@ -354,10 +357,9 @@ ECG_Status ecg_analyze(ECG_Context *ctx,
             double rr_mean = rr_sum / intervals->count;
             double bpm = 60.0 / rr_mean;
             printf("[ECG] Fréquence cardiaque moyenne: %.1f BPM\n", bpm);
+            printf("[ECG] RR moyen: %.3f s\n", rr_mean);
         }
     }
-
-
 
     return ECG_OK;
 }
