@@ -16,9 +16,9 @@
 
 #include <stdlib.h>
 
-/* ==================
+/* ===============================================================================
  * Constantes
- * ================== */
+ * =============================================================================== */
 
 /*
  * Période réfractaire minimale entre deux pics R.
@@ -56,21 +56,121 @@
 #define SIGNAL_PEAK_DECAY_FACTOR 0.125
 #define NOISE_PEAK_DECAY_FACTOR 0.125
 
+/*
+ * Fenêtre d'intégration en ms pour la MWI (Moving Window Integration).
+ * Correspond à la durée typique du complexe QRS, soit environ 130 ms.
+ * Pan-Thomkins précconise ~150ms.
+ */
+#define MWI_WINDOW_MS 130
+
+/* ===============================================================================
+ * Structures internes
+ * =============================================================================== */
+
+/*
+ * Pré allocation des buffers pour éviter les alloc dynamiques pendant l'analyse.
+ * Mémoire totale : 4 × MAX_SAMPLES × 8 bytes = 320 KB -> tient dans le cahce L2/L3.
+ */
 struct ECG_Context {
-    // TODO
-    int dummy;
+    // Copie locale des paramètres pour éviter les accès à la mémoire globale
+    ECG_Params params;
+
+    // Signal filtré (passe-bas)
+    double *low_pass_buffer;
+    // Signal dérivé (filtre passe-haut)
+    double *high_pass_buffer;
+    // Signal carré (non linéaire)
+    double *squared_buffer;
+    // Signal après fenêtre glissante (intégration)
+    double *mwi_buffer;
 };
 
+/**
+ * @brief Crée et init un contexte d'analyse ECG.
+ *
+ * Les appels à malloc sont couteux, on alloue donc les buffers une seule fois ici.
+ * Ainsi, l'analyse se fait sans aucune alloc
+ *
+ * @param params Paramètres d'analyse (non NULL).
+ * @return Pointeur vers le contexte en cas de succès, NULL sinon.
+ */
 ECG_Context *ecg_create(const ECG_Params *params) {
-    // minimal alloc for testing prupose
+    if (!params) return NULL;
+
     ECG_Context *ctx = malloc(sizeof(ECG_Context));
-    if (ctx) ctx->dummy = 0;
+    if (!ctx) return NULL;
+
+    // Copie des paramètre pour éviter ptr externe qui pourrait être modifié.
+    ctx->params = *params;
+
+    // Alloc des buffers
+    ctx->low_pass_buffer = malloc(sizeof(double) * MAX_SAMPLES);
+    ctx->high_pass_buffer = malloc(sizeof(double) * MAX_SAMPLES);
+    ctx->squared_buffer = malloc(sizeof(double) * MAX_SAMPLES);
+    ctx->mwi_buffer = malloc(sizeof(double) * MAX_SAMPLES);
+
+    // Suffit d'un échec de malloc pour tout annuler
+    if (!ctx->low_pass_buffer || !ctx->high_pass_buffer || !ctx->squared_buffer || !ctx->mwi_buffer) {
+        free(ctx->low_pass_buffer);
+        free(ctx->high_pass_buffer);
+        free(ctx->squared_buffer);
+        free(ctx->mwi_buffer);
+        free(ctx);
+        return NULL;
+    }
+
     return ctx;
 }
 
+/**
+ * @brief Libère un contexte d'analyse ECG et ses buffers internes.
+ * @param ctx Le contexte à libérer. Les buffers internes sont également libérés.
+ */
 void ecg_destroy(ECG_Context *ctx) {
+    if (!ctx) return;
+    free(ctx->low_pass_buffer);
+    free(ctx->high_pass_buffer);
+    free(ctx->squared_buffer);
+    free(ctx->mwi_buffer);
     free(ctx);
 }
+
+/* ===============================================================================
+ * Fonctions utilitaires internes
+ * =============================================================================== */
+
+/**
+ * Utilitaire pour affiner la position du pic R sur le signal NON filtré (car il y a un décalage).
+ * La recherche se fait dans [center - half_window, center + half_window].
+ *
+ * @param signal Le signal ECG à analyser.
+ * @param n_samples Le nombre d'échantillons dans le signal.
+ * @param center L'indice central autour duquel chercher le maximum.
+ * @param half_window La moitié de la fenêtre de recherche (en échantillons).
+ * @return L'indice de l'échantillon avec la valeur maximale dans la fenêtre.
+ */
+static int find_max(const double *signal, size_t n_samples, int center, int half_window) {
+    // On reste dans le tableau
+    int start = (center - half_window > 0) ? center - half_window : 0;
+    int end = (center + half_window < n_samples) ? center + half_window : (int)n_samples - 1;
+
+    int best_id = start;
+    double best_val = signal[start];
+
+    // accès séquentiel
+    for (int i = start + 1; i <= end; i++) {
+        if (signal[i] > best_val) {
+            best_val = signal[i];
+            best_id = i;
+        }
+    }
+
+    return best_id;
+}
+
+/* ===============================================================================
+ * Fonction d'analyse principale
+ * =============================================================================== */
 
 ECG_Status ecg_analyze(ECG_Context *ctx,
                        const double *signal,
