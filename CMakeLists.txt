@@ -8,6 +8,7 @@ set(SOURCES
     src/ecg_processing.c
     src/csv_reader.c
     src/json_writer.c
+    src/ecg_utils.c
 )
 
 include_directories(include)
