@@ -28,7 +28,7 @@
  * Le coeur ne peut pas battre à plus de 220 bpm, soit environ 270 ms entre deux battements.
  * J'utilise donc 270 ms comme garde-fou pour éviter de détecter des pics R trop proches les uns des autres.
  */
-#define REFRACTORY_PERIOD_MS 200
+#define REFRACTORY_PERIOD_MS 270
 // Nombre d'échantillons qui correspond à la priode réfractaire
 #define REFRACTORY_SAMPLES(heart_rate_hz) ((REFRACTORY_PERIOD_MS * (heart_rate_hz)) / 1000)
 
@@ -38,7 +38,7 @@
  * La largeur du complexe QRS est généralement inférieure entre 70 et 110ms.
  * J'utilise donc 130 ms pour avoir tout le QRS et éviter de trop lisser les données.
  */
-#define LOW_PASS_WINDOW_MS 150
+#define LOW_PASS_WINDOW_MS 130
 
 /*
  * Seuil initial pour la détection des pics R.
@@ -64,7 +64,7 @@
  * Correspond à la durée typique du complexe QRS, soit environ 130 ms.
  * Pan-Thomkins précconise ~150ms.
  */
-#define MWI_WINDOW_MS 150
+#define MWI_WINDOW_MS 130
 
 /* ===============================================================================
  * Structures internes
