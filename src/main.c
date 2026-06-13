@@ -3,6 +3,7 @@
 
 #include "csv_reader.h"
 #include "ecg_processing.h"
+#include "ecg_streaming.h"
 #include "json_writer.h"
 #include "output_structs.h"
 
@@ -45,14 +46,17 @@ int main(int argc, char *argv[])
 
     /* Ici vous êtes libre de déconstruire en chunk ou d'analyser le signal dans son entiéreté
        Dans la réalité vous serez plus ammené a avoir un flux continus plutôt qu'un gros chunk de données */
-    ECG_Status st = ecg_analyze(
+    /*ECG_Status st = ecg_analyze(
         ctx,
         ecg_data[lead_index],
         (size_t)sample_count,
         lead_index,
         &peaks,
         &intervals
-    );
+    );*/
+
+    int st = ecg_analyze_streaming(&params, ecg_data[lead_index],
+                               sample_count, &peaks, &intervals);
 
     if (st != ECG_OK) {
         fprintf(stderr, "Erreur: ecg_analyze() a retourné %d.\n", (int)st);

@@ -9,10 +9,12 @@ set(SOURCES
     src/csv_reader.c
     src/json_writer.c
     src/ecg_utils.c
+    src/ecg_streaming.c
 )
 
 include_directories(include)
 
 add_executable(ecg_dealination ${SOURCES})
+add_executable(ecg_streaming ${SOURCES})
 
 target_link_libraries(ecg_dealination m)
