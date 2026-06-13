@@ -5,7 +5,7 @@ set(CMAKE_C_STANDARD 99)
 
 set(SOURCES
     src/main.c
-    src/ecg_processing.c
+    # src/ecg_processing.c
     src/csv_reader.c
     src/json_writer.c
     src/ecg_utils.c
@@ -14,7 +14,7 @@ set(SOURCES
 
 include_directories(include)
 
-add_executable(ecg_dealination ${SOURCES})
+# add_executable(ecg_dealination ${SOURCES})
 add_executable(ecg_streaming ${SOURCES})
 
 target_link_libraries(ecg_dealination m)

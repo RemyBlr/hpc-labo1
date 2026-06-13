@@ -46,6 +46,8 @@ int main(int argc, char *argv[])
 
     /* Ici vous êtes libre de déconstruire en chunk ou d'analyser le signal dans son entiéreté
        Dans la réalité vous serez plus ammené a avoir un flux continus plutôt qu'un gros chunk de données */
+
+    // Si on fait avec processing, LABO 1
     /*ECG_Status st = ecg_analyze(
         ctx,
         ecg_data[lead_index],
@@ -55,6 +57,7 @@ int main(int argc, char *argv[])
         &intervals
     );*/
 
+    // Si on fait avec streaming, LABO 7
     int st = ecg_analyze_streaming(&params, ecg_data[lead_index],
                                sample_count, &peaks, &intervals);
 

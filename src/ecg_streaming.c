@@ -1,4 +1,12 @@
-// ecg_streaming.c — version corrigée
+/**
+ * ECG streaming analysis: implémentation d'un algorithme de détection de pics R
+ * adapté pour le streaming (traitement par paquets avec état persistant).
+ * L'algorithme est inspiré de Pan-Tompkins, avec des optimisations pour le streaming :
+ * - Pas d'alloc dynamique pendant l'analyse.
+ * - Localité du cache.
+ * - Seuils adaptatifs avec capture de tendance.
+ * - Période réfractaire pour éviter les faux positifs.
+ */
 #include "ecg_streaming.h"
 #include "ecg_utils.h"
 #include <stdio.h>
@@ -37,7 +45,7 @@ static int find_max_local(const double *sig, int n, int center, int half_win) {
 /*
  * Calcule le vrai max_mwi sur le premier paquet en faisant tourner le pipeline
  * complet (sans état persistant, juste pour calibrer le seuil initial).
- * C'est exactement ce que fait ecg_analyze() avec son `max_mwi`.
+ * C'est ce que fait ecg_analyze() avec son `max_mwi`.
  */
 static double calibrate_threshold(const double *signal, int n, int fs) {
     const size_t hp_win  = (size_t)((130 * fs) / 1000);
@@ -70,7 +78,7 @@ static void stream_state_init(StreamState *s,
     s->signal_peak   = 0.25 * max_mwi;
     s->noise_peak    = 0.25 * max_mwi * 0.5;
     s->threshold     = s->noise_peak + 0.25 * (s->signal_peak - s->noise_peak);
-    s->last_r_global = -9999;
+    s->last_r_global = -9999; /* assez petit pour ne pas bloquer les premiers pics */
 
     printf("[STREAMING] seuil initial = %f, signal_peak = %f\n",
            s->threshold, s->signal_peak);
